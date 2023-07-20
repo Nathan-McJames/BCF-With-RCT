@@ -3,17 +3,19 @@
 using namespace Rcpp;
 
 // Node class definition
+// Trees in the mu part and the tau part of the model both use this same class
 class Node {
   
 public:
   
   //Attributes
-  double mu;
-  int variable;
-  double split_val;
-  LogicalVector observations;
-  bool is_terminal;
-  bool in_use;
+  double mu; //Store terminal node parameters
+  int variable; //The variable that is being used to split on
+  double split_val; //The split value of the variable being used
+  LogicalVector observations; //Indicates if a given observation belongs to a terminal node
+  bool is_terminal; //Is this a terminal node?
+  bool in_use; //Is this node currently in use in the tree?
+  
   
   // Default Constructor
   Node() {
@@ -35,7 +37,7 @@ public:
   }
   
   
-  // Method for updating mu
+  // Method for updating mu in a prognostic effect tree
   void update_mu(double tau, 
                  double tau_mu, 
                  NumericVector y_resid) {
@@ -47,7 +49,7 @@ public:
   }
   
   
-  // Method for updating mu
+  // Method for updating mu in a treatment effect tree
   void update_tau(double tau, 
                  double tau_tau, 
                  NumericVector y_resid,
@@ -75,7 +77,7 @@ public:
   
   std::vector<Node> node_vector;
   
-  // Constructor
+  // Default Constructor
   Tree(int num_nodes = 1, int num_obs = 1) {
     node_vector.resize(num_nodes);
     node_vector[0].observations = LogicalVector(num_obs, true);
@@ -92,7 +94,7 @@ public:
   }
 
   
-  // Method for updating all terminal nodes
+  // Method for updating all terminal nodes in a prognostic effect tree
   void update_nodes(double tau, 
                     double tau_mu, 
                     NumericVector y_resid) {
@@ -109,7 +111,7 @@ public:
   }
   
   
-  // Method for updating all terminal nodes
+  // Method for updating all terminal nodes in a treatment effect tree
   void update_nodes_tau(double tau, 
                     double tau_tau, 
                     NumericVector y_resid,
@@ -128,6 +130,7 @@ public:
 
   
   // Method for selecting a terminal node
+  // Needed for example when growing a tree
   int get_terminal_node() {
     
     std::vector<int> valid_indices;
@@ -144,6 +147,7 @@ public:
   
   
   // Method for selecting a non terminal node
+  // Used when the change operation is selected
   int get_non_terminal_node() {
     
     std::vector<int> valid_indices;
@@ -167,6 +171,7 @@ public:
   
   
   // Method for selecting a non terminal node with a parent
+  // Used in swap operation
   int get_parent_child() {
     
     std::vector<int> valid_indices;
@@ -190,6 +195,7 @@ public:
   
   
   // Method for selecting a parent of two terminal nodes
+  // Used in prune operation
   int get_terminal_parent() {
     
     std::vector<int> valid_indices;
@@ -300,6 +306,9 @@ public:
   
   
   // Method for updating observations
+  // Example: when the change operation is selected, the observations
+  // might belong to different terminal nodes.
+  // This method sweeps through the tree to update the observations attribute of the tree
   void change_update(NumericMatrix X) {
     
     int num_nodes = node_vector.size();
@@ -379,6 +388,8 @@ public:
   
   
   // Method for checking if any nodes are empty
+  // If the selected operation results in a terminal node with less than 
+  // min_nodesize observations, this can be used to automatically reject the proposal tree
   bool has_empty_nodes(int min_nodesize) {
     
     int num_nodes = node_vector.size();
@@ -397,6 +408,7 @@ public:
     return false;
   }
 
+  // Get the log likelihood of a prognostic effect tree for use in MH algorithm
   double log_lik(double tau_mu, 
                  double tau,
                  double alpha,
@@ -431,7 +443,7 @@ public:
     return log_lik;
   }
   
-  
+  // Get the log likelihood of a treatment effect tree for use in MH algorithm
   double log_lik_tau(double tau_tau, 
                  double tau,
                  double alpha_tau,
@@ -514,7 +526,8 @@ public:
   }
 };
 
-
+// Get the rowsums of a matrix using every column except the specified column
+// Use columnToRemove=-1 to get rowsums using all columns
 NumericVector rowSumsWithoutColumn(NumericMatrix mat, int columnToRemove) {
   int numRows = mat.nrow();
   int numCols = mat.ncol();
@@ -537,7 +550,7 @@ NumericVector rowSumsWithoutColumn(NumericMatrix mat, int columnToRemove) {
 }
  
  
-
+// Sample the precision parameter from gamma distribution
 double sample_tau(double n,
                   double nu,
                   NumericVector y,
@@ -552,7 +565,7 @@ double sample_tau(double n,
   return R::rgamma(shape, scale);
 }
 
-
+// This is the main function we will use so we need to export it to R
 // [[Rcpp::export]]
 List fast_rct_bcf(NumericMatrix X,
                NumericVector y,
@@ -580,41 +593,48 @@ List fast_rct_bcf(NumericMatrix X,
                int n_tree_tau_rct,
                int min_nodesize)
 {
-  //set tau
+  //Initialise the precision parameter
   double tau = 1;
   
-  //normalise y
+  //normalise y before starting
   double y_mean = mean(y);
   double y_sd = sd(y);
   NumericVector y_scaled = (y-y_mean)/y_sd;
   
   //get number of variables p, and rows n
+  //n observations
   int n = y_scaled.size();
+  //columns in the control matrix of covariates
   int p = X.ncol();
+  //columns in the moderating matrix of covariates
   int p_tau = X_tau.ncol();
   
   //For holding tree predictions at each iteration
+  //Entry i,j holds prediction from tree j for observation i
   NumericMatrix tree_preds_mu(n, n_tree_mu);
   NumericMatrix tree_preds_mu_rct(n, n_tree_mu_rct);
   NumericMatrix tree_preds_tau(n, n_tree_tau);
   NumericMatrix tree_preds_tau_rct(n, n_tree_tau_rct);
   
   //For holding overall predictions from each iteration
+  //Entry i,j holds overall prediction from iteration j for observation i
   NumericMatrix preds_mat_mu(n, n_iter);
   NumericMatrix preds_mat_mu_rct(n, n_iter);
   NumericMatrix preds_mat_tau(n, n_iter);
   NumericMatrix preds_mat_tau_rct(n, n_iter);
   
-  //For holding tau from each iteration
+  //For holding tau precision parameter from each iteration
   NumericVector taus(n_iter);
   
   StringVector choices = {"Grow", "Prune", "Change", "Swap"};
-  
+
+  //Set up the forests used in each mu and tau part of the model
   Forest bart_forest_mu(n_tree_mu, 1, n);
   Forest bart_forest_mu_rct(n_tree_mu_rct, 1, n);
   Forest bart_forest_tau(n_tree_tau, 1, n);
   Forest bart_forest_tau_rct(n_tree_tau_rct, 1, n);
-  
+
+  //Start to go through every iteration
   for(int iter = 0; iter < n_iter; iter++)
   {
     //Loop for updating mu trees (mu trees that apply to everybody)
@@ -899,7 +919,8 @@ List fast_rct_bcf(NumericMatrix X,
       
     Rcpp::Rcout << "Total of " << iter+1 << " of " << n_iter << " iterations completed! " << "(" << (float)(iter+1)/(float)n_iter*100 << "%)                         " << "\r";
     Rcpp::Rcout.flush();
-    
+
+    //Get the overall predictions from the iteration by adding contributions from all trees
     NumericVector iter_preds_mu = rowSumsWithoutColumn(tree_preds_mu, -1);
     NumericVector iter_preds_mu_rct = rowSumsWithoutColumn(tree_preds_mu_rct, -1);
     NumericVector iter_preds_tau = rowSumsWithoutColumn(tree_preds_tau, -1);
@@ -912,7 +933,8 @@ List fast_rct_bcf(NumericMatrix X,
       preds_mat_tau(i, iter) = iter_preds_tau[i];
       preds_mat_tau_rct(i, iter) = iter_preds_tau_rct[i];
     }
-    
+
+    //Update the precision parameter
     tau=sample_tau(n, nu, y_scaled, iter_preds_mu + Z_rct*iter_preds_mu_rct + Z_treat*iter_preds_tau + Z_treat*Z_rct*iter_preds_tau_rct, lambda);
     
     taus[iter] = tau;
@@ -920,7 +942,7 @@ List fast_rct_bcf(NumericMatrix X,
   
   Rcpp::Rcout << "                                                                                                                                     ";
   
-  
+  //Return all results
   return List::create(
     Named("predictions_mu") = (preds_mat_mu*y_sd)+y_mean,
     Named("predictions_mu_rct") = preds_mat_mu_rct*y_sd,
