@@ -32,10 +32,10 @@ double sample_b0(NumericVector y, //outcome y
   NumericVector x_group_1 = x[is_in_group_1];
   int n_group_1 = y_group_1.size();
   double precision = tau_0 + tau * n_group_1;
-  double mean = 0;
+  double mean = tau_0 * mu_0;
   for(int i=0; i<n_group_1; i++)
   {
-    mean += tau_0 * mu_0 + tau * (y_group_1[i] - b1 * x_group_1[i]); 
+    mean +=  tau * (y_group_1[i] - b1 * x_group_1[i]); 
   }
   mean /= precision;
   return R::rnorm(mean, 1 / sqrt(precision));
@@ -52,15 +52,15 @@ double sample_b1(NumericVector y, //outcome y
   //Here both groups contribute to the estimation of the slope
   //we do not need to do any sub-setting
   int n = y.size();
-  double precision=0;
+  double precision=tau_1;
   for(int i=0; i<n; i++)
   {
-    precision += tau_1 + tau * x[i]*x[i]; 
+    precision += tau * x[i]*x[i]; 
   }
-  double mean = 0;
+  double mean = tau_1 * mu_1;
   for(int i=0; i<n; i++)
   {
-    mean += tau_1 * mu_1 + tau * ((y[i] - b0) * x[i]); 
+    mean +=  tau * ((y[i] - b0) * x[i]); 
   }
   mean /= precision;
   return R::rnorm(mean, 1 / sqrt(precision));
@@ -138,6 +138,7 @@ NumericVector gibbs(NumericVector y,
 
 
 /*** R
+set.seed(1234567)
 
 n_group_1<-300
 n_group_2<-300
@@ -179,4 +180,6 @@ abline(mean(samples[,1]), mean(samples[,2]))
 hist(samples[-c(1:5000),1], xlab="Intercept Samples", main="")
 hist(samples[-c(1:5000),2], xlab="Slope Samples", main="")
 hist(sqrt(1/samples[-c(1:5000),3]), xlab="SD Samples", main="")
+
+mean(samples[-c(1:5000),1])
 */
